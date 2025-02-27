@@ -299,7 +299,7 @@ class VitInference:
 
         return frame_keypoints
 
-    def draw(self, show_yolo=True, show_raw_yolo=False, confidence_threshold=0.5):
+    def draw(self, show_yolo=False, show_raw_yolo=False, confidence_threshold=0.5):
         """
         Draw keypoints and bounding boxes on the image.
 
