@@ -66,6 +66,9 @@ class ViTPoseApp:
         self.fps_print_interval = 30
         self.frame_count = 0
         
+        # Initialize black background for privacy mode
+        self.black_bg = None
+        
         # Start the video processing
         self.is_running = True
         self.update()
@@ -138,48 +141,25 @@ class ViTPoseApp:
         
     def init_model(self):
         # Model configuration
-        model_path = 'vitpose-s-wholebody.pth'
-        yolo_path = 'yolov8n.pt'
-        dataset = 'wholebody'
+        model_path = 'vitpose-s-coco.pth'
+        yolo_path = 'yolo11n.pt'
+        dataset = 'coco'
 
         # Create model with specified device and improved tracking parameters
         self.model = VitInference(
             model_path, 
             yolo_path, 
             model_name='s',
-            yolo_size=320,
+            yolo_size=320,  # Keep YOLO size for detection quality
             is_video=True, 
-            device=None,
+            device=None,  # Let VitInference handle device detection
             dataset=dataset, 
-            yolo_step=1,
-            tracker_max_age=30,
-            tracker_min_hits=2,
-            tracker_iou_threshold=0.2
+            yolo_step=3,  # 每3帧运行一次 YOLO 检测，平衡性能和稳定性
+            tracker_max_age=15,  # 减少最大追踪帧数
+            tracker_min_hits=1,  # 降低开始跟踪所需的连续检测次数
+            tracker_iou_threshold=0.2  # 保持较低的IOU阈值以维持跟踪稳定性
         )
-        self.confidence_threshold = 0.4
-        
-        # 添加关键点平滑
-        self.smooth_factor = 0.3  # EMA平滑因子 (0-1), 越大平滑效果越强
-        self.prev_keypoints = None  # 存储上一帧的关键点
-        
-    def smooth_keypoints(self, current_keypoints):
-        """使用指数移动平均对关键点进行平滑"""
-        if self.prev_keypoints is None:
-            self.prev_keypoints = current_keypoints
-            return current_keypoints
-            
-        # 对每个检测到的人进行平滑
-        for person_id in current_keypoints:
-            if person_id in self.prev_keypoints:
-                # 只平滑置信度高的关键点
-                mask = current_keypoints[person_id][:, 2] > self.confidence_threshold
-                current_keypoints[person_id][mask, :2] = (
-                    self.smooth_factor * self.prev_keypoints[person_id][mask, :2] +
-                    (1 - self.smooth_factor) * current_keypoints[person_id][mask, :2]
-                )
-        
-        self.prev_keypoints = current_keypoints.copy()
-        return current_keypoints
+        self.confidence_threshold = 0.4  # 提高置信度阈值，只显示更可靠的关键点
         
     def update(self):
         if not self.is_running:
@@ -196,6 +176,7 @@ class ViTPoseApp:
         # Skip frame processing for higher FPS
         self.skip_frames += 1
         if self.skip_frames % self.process_every_n_frames != 0:
+            # 在跳过的帧中也显示上一帧的结果，避免闪烁
             if hasattr(self, 'last_display_frame'):
                 frame_rgb = cv2.cvtColor(self.last_display_frame, cv2.COLOR_BGR2RGB)
                 img = Image.fromarray(frame_rgb)
@@ -216,6 +197,7 @@ class ViTPoseApp:
                 self.photo = ImageTk.PhotoImage(image=img)
                 self.video_label.config(image=self.photo)
             
+            # Schedule next update
             self.root.after(1, self.update)
             return
             
@@ -229,11 +211,6 @@ class ViTPoseApp:
         # Infer keypoints
         with torch.no_grad():
             keypoints = self.model.inference(frame_rgb)
-            
-            # 对关键点进行平滑
-            if hasattr(self.model, '_keypoints'):
-                self.model._keypoints = self.smooth_keypoints(self.model._keypoints)
-                
         t_inference = time.time()
         
         # Set face keypoint confidence to 0 (don't show face keypoints)
@@ -247,14 +224,15 @@ class ViTPoseApp:
         try:
             if privacy_mode:
                 # PRIVACY MODE: Draw skeleton on black background
-                black_bg = np.zeros_like(frame_rgb)
-                self.model._img = black_bg
-                normal_result = self.model.draw(confidence_threshold=self.confidence_threshold, show_yolo=False)
+                if self.black_bg is None or self.black_bg.shape != frame_rgb.shape:
+                    self.black_bg = np.zeros_like(frame_rgb)
+                self.model._img = self.black_bg
+                normal_result = self.model.draw(confidence_threshold=self.confidence_threshold, show_yolo=True)
                 display_frame = cv2.cvtColor(normal_result, cv2.COLOR_RGB2BGR)
             else:
                 # Normal mode: Draw skeleton on RGB image
                 self.model._img = frame_rgb
-                normal_result = self.model.draw(confidence_threshold=self.confidence_threshold, show_yolo=False)
+                normal_result = self.model.draw(confidence_threshold=self.confidence_threshold, show_yolo=True)
                 display_frame = cv2.cvtColor(normal_result, cv2.COLOR_RGB2BGR)
             
             # 保存当前帧用于跳帧显示
@@ -280,12 +258,6 @@ class ViTPoseApp:
         self.fps_value_label.config(text=f"{avg_fps:.1f}")
         process_time = (t_draw - t_start) * 1000
         self.process_value_label.config(text=f"{process_time:.1f} ms")
-        
-        # Print performance info every few frames
-        if self.frame_count % self.fps_print_interval == 0:
-            privacy_status = "Normal Mode" if self.show_rgb_var.get() else "Privacy Mode"
-            print(f"FPS: {avg_fps:.1f} | {privacy_status} | Convert: {(t_convert-t_start)*1000:.1f}ms | "
-                  f"Inference: {(t_inference-t_convert)*1000:.1f}ms | Draw: {(t_draw-t_inference)*1000:.1f}ms")
         
         # Convert to PIL format for tkinter
         frame_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
