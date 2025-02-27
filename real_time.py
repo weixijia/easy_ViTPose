@@ -60,7 +60,9 @@ class ViTPoseApp:
         # Initialize variables for FPS calculation
         self.prev_time = 0
         self.curr_time = 0
+        self.display_prev_time = 0  # 用于计算显示帧率
         self.fps_values = []
+        self.display_fps_values = []  # 用于显示帧率的平滑
         self.skip_frames = 0
         self.process_every_n_frames = 2  # 减少帧跳过，提高流畅度
         self.fps_print_interval = 30
@@ -137,7 +139,6 @@ class ViTPoseApp:
         show_rgb = self.show_rgb_var.get()
         mode_text = "Normal Mode" if show_rgb else "Privacy Mode"
         self.mode_value_label.config(text=mode_text)
-        print(f"Privacy mode toggled: show_rgb = {self.show_rgb_var.get()}")
         
     def init_model(self):
         # Model configuration
@@ -161,6 +162,22 @@ class ViTPoseApp:
         )
         self.confidence_threshold = 0.4  # 提高置信度阈值，只显示更可靠的关键点
         
+    def resize_image_for_display(self, img):
+        """调整图像大小以适应显示区域"""
+        video_width = self.video_frame.winfo_width()
+        video_height = self.video_frame.winfo_height()
+        if video_width > 1 and video_height > 1:  # 确保有效尺寸
+            img_width, img_height = img.size
+            # 计算保持宽高比的新尺寸
+            if video_width / video_height > img_width / img_height:
+                new_height = video_height
+                new_width = int(img_width * (video_height / img_height))
+            else:
+                new_width = video_width
+                new_height = int(img_height * (video_width / img_width))
+            img = img.resize((new_width, new_height), Image.LANCZOS)
+        return img
+        
     def update(self):
         if not self.is_running:
             return
@@ -173,6 +190,15 @@ class ViTPoseApp:
             
         self.frame_count += 1
         
+        # 计算显示帧率（每一帧都计算，无论是否处理）
+        curr_display_time = time.time()
+        if self.display_prev_time > 0:
+            display_fps = 1 / (curr_display_time - self.display_prev_time)
+            self.display_fps_values.append(display_fps)
+            if len(self.display_fps_values) > 10:
+                self.display_fps_values.pop(0)
+        self.display_prev_time = curr_display_time
+        
         # Skip frame processing for higher FPS
         self.skip_frames += 1
         if self.skip_frames % self.process_every_n_frames != 0:
@@ -180,22 +206,14 @@ class ViTPoseApp:
             if hasattr(self, 'last_display_frame'):
                 frame_rgb = cv2.cvtColor(self.last_display_frame, cv2.COLOR_BGR2RGB)
                 img = Image.fromarray(frame_rgb)
-                
-                # Resize to fit the video frame
-                video_width = self.video_frame.winfo_width()
-                video_height = self.video_frame.winfo_height()
-                if video_width > 1 and video_height > 1:
-                    img_width, img_height = img.size
-                    if video_width / video_height > img_width / img_height:
-                        new_height = video_height
-                        new_width = int(img_width * (video_height / img_height))
-                    else:
-                        new_width = video_width
-                        new_height = int(img_height * (video_width / img_width))
-                    img = img.resize((new_width, new_height), Image.LANCZOS)
-                
+                img = self.resize_image_for_display(img)
                 self.photo = ImageTk.PhotoImage(image=img)
                 self.video_label.config(image=self.photo)
+                
+                # Update FPS display even in skipped frames
+                if len(self.display_fps_values) > 0:
+                    avg_display_fps = sum(self.display_fps_values) / len(self.display_fps_values)
+                    self.fps_value_label.config(text=f"{avg_display_fps:.1f}")
             
             # Schedule next update
             self.root.after(1, self.update)
@@ -228,54 +246,41 @@ class ViTPoseApp:
                     self.black_bg = np.zeros_like(frame_rgb)
                 self.model._img = self.black_bg
                 normal_result = self.model.draw(confidence_threshold=self.confidence_threshold, show_yolo=True)
-                display_frame = cv2.cvtColor(normal_result, cv2.COLOR_RGB2BGR)
             else:
                 # Normal mode: Draw skeleton on RGB image
                 self.model._img = frame_rgb
                 normal_result = self.model.draw(confidence_threshold=self.confidence_threshold, show_yolo=True)
-                display_frame = cv2.cvtColor(normal_result, cv2.COLOR_RGB2BGR)
             
-            # 保存当前帧用于跳帧显示
-            self.last_display_frame = display_frame.copy()
+            # 转换回BGR并保存当前帧用于跳帧显示
+            display_frame = cv2.cvtColor(normal_result, cv2.COLOR_RGB2BGR)
+            self.last_display_frame = display_frame  # 无需额外复制
         except Exception as e:
             print(f"Error in drawing: {e}")
             display_frame = frame
             
         t_draw = time.time()
         
-        # Calculate FPS
+        # Calculate processing FPS (only for processed frames)
         self.curr_time = time.time()
         fps = 1 / (self.curr_time - self.prev_time) if self.prev_time > 0 else 0
         self.prev_time = self.curr_time
         
-        # Smooth FPS calculation
+        # Smooth FPS calculation for processing
         self.fps_values.append(fps)
         if len(self.fps_values) > 10:
             self.fps_values.pop(0)
         avg_fps = sum(self.fps_values) / len(self.fps_values)
         
-        # Update status labels
-        self.fps_value_label.config(text=f"{avg_fps:.1f}")
+        # Use display FPS for UI update
+        avg_display_fps = sum(self.display_fps_values) / len(self.display_fps_values) if self.display_fps_values else 0
+        self.fps_value_label.config(text=f"{avg_display_fps:.1f}")
         process_time = (t_draw - t_start) * 1000
         self.process_value_label.config(text=f"{process_time:.1f} ms")
         
         # Convert to PIL format for tkinter
         frame_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(frame_rgb)
-        
-        # Resize to fit the video frame
-        video_width = self.video_frame.winfo_width()
-        video_height = self.video_frame.winfo_height()
-        if video_width > 1 and video_height > 1:  # Ensure valid dimensions
-            img_width, img_height = img.size
-            # Calculate new size while maintaining aspect ratio
-            if video_width / video_height > img_width / img_height:
-                new_height = video_height
-                new_width = int(img_width * (video_height / img_height))
-            else:
-                new_width = video_width
-                new_height = int(img_height * (video_width / img_width))
-            img = img.resize((new_width, new_height), Image.LANCZOS)
+        img = self.resize_image_for_display(img)
         
         # Convert to PhotoImage and update display
         self.photo = ImageTk.PhotoImage(image=img)
