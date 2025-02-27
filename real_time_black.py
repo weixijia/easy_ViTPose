@@ -51,8 +51,8 @@ class ViTPoseApp:
         
         # Initialize camera
         self.cap = cv2.VideoCapture(camera_index)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         
         # Initialize model
         self.init_model()
@@ -62,13 +62,9 @@ class ViTPoseApp:
         self.curr_time = 0
         self.fps_values = []
         self.skip_frames = 0
-        self.process_every_n_frames = 2  # 减少帧跳过，提高流畅度
+        self.process_every_n_frames = 3  # Increase frame skip for better performance
         self.fps_print_interval = 30
         self.frame_count = 0
-        
-        # 添加无人检测计时器
-        self.last_person_detected_time = time.time()
-        self.no_person_threshold = 1.0  # 无人检测阈值(秒)
         
         # Start the video processing
         self.is_running = True
@@ -141,26 +137,41 @@ class ViTPoseApp:
         print(f"Privacy mode toggled: show_rgb = {self.show_rgb_var.get()}")
         
     def init_model(self):
+        # Automatically detect available device
+        if torch.cuda.is_available():
+            device = 'cuda'
+            print("Using CUDA acceleration")
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.deterministic = False
+            torch.backends.cudnn.enabled = True
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            device = 'mps'
+            print("Using MPS acceleration")
+            if hasattr(torch.backends.mps, 'enable_linalg'):
+                torch.backends.mps.enable_linalg = True
+            if hasattr(torch.backends.mps, 'enable_math'):
+                torch.backends.mps.enable_math = True
+        else:
+            device = 'cpu'
+            print("Running on CPU")
+
         # Model configuration
         model_path = 'vitpose-s-wholebody.pth'
-        yolo_path = 'yolov8n.pt'
+        yolo_path = 'yolo11n.pt'
         dataset = 'wholebody'
 
-        # Create model with specified device and improved tracking parameters
+        # Create model with specified device
         self.model = VitInference(
             model_path, 
             yolo_path, 
             model_name='s',
-            yolo_size=320,  # Keep YOLO size for detection quality
+            yolo_size=320,  # Restore original YOLO size
             is_video=True, 
-            device=None,  # Let VitInference handle device detection
+            device=device, 
             dataset=dataset, 
-            yolo_step=1,  # 每帧都运行 YOLO 检测，提高稳定性
-            tracker_max_age=30,  # 增加最大追踪帧数到1秒(假设30fps)，允许目标短暂消失
-            tracker_min_hits=2,  # 需要连续2帧检测才开始跟踪，减少误跟踪
-            tracker_iou_threshold=0.2  # 降低IOU阈值，使目标匹配更宽松
+            yolo_step=3  # Increase YOLO detection interval
         )
-        self.confidence_threshold = 0.4  # 提高置信度阈值，只显示更可靠的关键点
+        self.confidence_threshold = 0.3
         
     def update(self):
         if not self.is_running:
@@ -177,27 +188,6 @@ class ViTPoseApp:
         # Skip frame processing for higher FPS
         self.skip_frames += 1
         if self.skip_frames % self.process_every_n_frames != 0:
-            # 在跳过的帧中也显示上一帧的结果，避免闪烁
-            if hasattr(self, 'last_display_frame'):
-                frame_rgb = cv2.cvtColor(self.last_display_frame, cv2.COLOR_BGR2RGB)
-                img = Image.fromarray(frame_rgb)
-                
-                # Resize to fit the video frame
-                video_width = self.video_frame.winfo_width()
-                video_height = self.video_frame.winfo_height()
-                if video_width > 1 and video_height > 1:
-                    img_width, img_height = img.size
-                    if video_width / video_height > img_width / img_height:
-                        new_height = video_height
-                        new_width = int(img_width * (video_height / img_height))
-                    else:
-                        new_width = video_width
-                        new_height = int(img_height * (video_width / img_width))
-                    img = img.resize((new_width, new_height), Image.LANCZOS)
-                
-                self.photo = ImageTk.PhotoImage(image=img)
-                self.video_label.config(image=self.photo)
-            
             # Schedule next update
             self.root.after(1, self.update)
             return
@@ -213,17 +203,6 @@ class ViTPoseApp:
         with torch.no_grad():
             keypoints = self.model.inference(frame_rgb)
         t_inference = time.time()
-        
-        # 检查是否检测到人
-        if hasattr(self.model, '_keypoints') and len(self.model._keypoints) > 0:
-            # 有人被检测到，更新时间戳
-            self.last_person_detected_time = time.time()
-        else:
-            # 检查无人检测时间是否超过阈值
-            if time.time() - self.last_person_detected_time > self.no_person_threshold:
-                # 重置跟踪器
-                self.model.reset()
-                print("No person detected for 1 second, tracker reset.")
         
         # Set face keypoint confidence to 0 (don't show face keypoints)
         if hasattr(self.model, '_keypoints'):
@@ -245,9 +224,6 @@ class ViTPoseApp:
                 self.model._img = frame_rgb
                 normal_result = self.model.draw(confidence_threshold=self.confidence_threshold, show_yolo=True)
                 display_frame = cv2.cvtColor(normal_result, cv2.COLOR_RGB2BGR)
-            
-            # 保存当前帧用于跳帧显示
-            self.last_display_frame = display_frame.copy()
         except Exception as e:
             print(f"Error in drawing: {e}")
             display_frame = frame

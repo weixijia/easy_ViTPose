@@ -76,6 +76,9 @@ class VitInference:
         yolo_step (int, optional): The tracker can be used to predict the bboxes instead of yolo for performance,
                                    this flag specifies how often yolo is applied (e.g. 1 applies yolo every frame).
                                    This does not have any effect when is_video is False.
+        tracker_max_age (int, optional): Maximum age of the tracker.
+        tracker_min_hits (int, optional): Minimum hits for the tracker.
+        tracker_iou_threshold (float, optional): IOU threshold for the tracker.
     """
 
     def __init__(self, model: str,
@@ -87,7 +90,10 @@ class VitInference:
                  device: Optional[str] = None,
                  is_video: Optional[bool] = False,
                  single_pose: Optional[bool] = False,
-                 yolo_step: Optional[int] = 1):
+                 yolo_step: Optional[int] = 1,
+                 tracker_max_age: Optional[int] = None,
+                 tracker_min_hits: Optional[int] = None,
+                 tracker_iou_threshold: Optional[float] = 0.3):
         assert os.path.isfile(model), f'The model file {model} does not exist'
         assert os.path.isfile(yolo), f'The YOLOv8 model {yolo} does not exist'
 
@@ -106,6 +112,10 @@ class VitInference:
         self.yolo_step = yolo_step
         self.is_video = is_video
         self.single_pose = single_pose
+        # Store tracker parameters
+        self.tracker_max_age = tracker_max_age
+        self.tracker_min_hits = tracker_min_hits
+        self.tracker_iou_threshold = tracker_iou_threshold
         self.reset()
 
         # State saving during inference
@@ -177,11 +187,20 @@ class VitInference:
         This will reset the internal counter of frames, on videos
         this is necessary to reset the tracker.
         """
-        min_hits = 3 if self.yolo_step == 1 else 1
         use_tracker = self.is_video and not self.single_pose
-        self.tracker = Sort(max_age=self.yolo_step,
-                            min_hits=min_hits,
-                            iou_threshold=0.3) if use_tracker else None  # TODO: Params
+        if use_tracker:
+            # Use custom tracker parameters if provided, otherwise use defaults
+            max_age = self.tracker_max_age if self.tracker_max_age is not None else self.yolo_step
+            min_hits = self.tracker_min_hits if self.tracker_min_hits is not None else (3 if self.yolo_step == 1 else 1)
+            iou_threshold = self.tracker_iou_threshold
+            
+            self.tracker = Sort(
+                max_age=max_age,
+                min_hits=min_hits,
+                iou_threshold=iou_threshold
+            )
+        else:
+            self.tracker = None
         self.frame_counter = 0
 
     @classmethod
