@@ -193,9 +193,9 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Extract skeletons from video file and save to CSV')
-    parser.add_argument('--input-video', type=str, default="WorkOut.mov",
+    parser.add_argument('--input-video', type=str, default="excise_one.mov",
                         help='Path to input video file')
-    parser.add_argument('--output-csv', type=str, default="reference_skeletons.csv",
+    parser.add_argument('--output-csv', type=str, default="excise_one_reference_skeletons.csv",
                         help='Path to output CSV file')
     parser.add_argument('--model', type=str, default='vitpose-s-coco.pth',
                         help='Checkpoint path of the model')
